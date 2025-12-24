@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client - Screen Sharer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: #f0f2f5;
+        }
+
+        .container {
+            text-align: center;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        #status {
+            margin-top: 20px;
+            color: #555;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Screen Sharing Client</h1>
+        <p>Click below to start sharing your screen with the Admin.</p>
+        <button id="startBtn">Start Sharing</button>
+        <div id="status">Status: Disconnected</div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const startBtn = document.getElementById('startBtn');
+        const statusDiv = document.getElementById('status');
+
+        // Get Room ID from URL or default to 'room1'
+        const urlParams = new URLSearchParams(window.location.search);
+        const ROOM_ID = urlParams.get('room') || 'room1';
+
+        // Update UI to show current room
+        document.querySelector('h1').innerText += ` (Room: ${ROOM_ID})`;
+
+        let peerConnection;
+
+        // STUN Server Configuration
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        // Join the room upon connection
+        socket.on('connect', () => {
+            statusDiv.innerText = 'Status: Connected to Server';
+            socket.emit('join', ROOM_ID);
+        });
+
+        // Handle Start Sharing
+        startBtn.addEventListener('click', async () => {
+            try {
+                startBtn.disabled = true;
+                statusDiv.innerText = 'Status: Selecting Screen...';
+
+                // 1. Get Display Media (Screen Stream)
+                const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+                statusDiv.innerText = 'Status: Sharing...';
+
+                // 2. Create Peer Connection
+                createPeerConnection();
+
+                // 3. Add Stream Tracks to Peer Connection
+                stream.getTracks().forEach(track => {
+                    peerConnection.addTrack(track, stream);
+                    // Handle stream stop (user clicks "Stop Sharing" in browser UI)
+                    track.onended = () => {
+                        statusDiv.innerText = 'Status: Sharing Stopped';
+                        startBtn.disabled = false;
+                        if (peerConnection) peerConnection.close();
+                        // Reload page to reset state cleanly or handle reset logic
+                        location.reload();
+                    };
+                });
+
+                // 4. Create Offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                // 5. Send Offer to Admin
+                socket.emit('offer', { room: ROOM_ID, offer: offer });
+
+            } catch (err) {
+                console.error("Error starting screen share:", err);
+                statusDiv.innerText = 'Status: Error - ' + err.message;
+                startBtn.disabled = false;
+            }
+        });
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            // Handle ICE Candidates
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('candidate', { room: ROOM_ID, candidate: event.candidate });
+                }
+            };
+
+            // Handle Connection State Changes
+            peerConnection.onconnectionstatechange = () => {
+                console.log("Connection State:", peerConnection.connectionState);
+                if (peerConnection.connectionState === 'connected') {
+                    statusDiv.innerText = 'Status: Live with Admin';
+                }
+            };
+        }
+
+        // Handle Answer from Admin
+        socket.on('answer', async (answer) => {
+            if (!peerConnection) return;
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            } catch (err) {
+                console.error("Error setting remote description:", err);
+            }
+        });
+
+        // Handle ICE Candidates from Admin
+        socket.on('candidate', async (candidate) => {
+            if (!peerConnection) return;
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            } catch (err) {
+                console.error("Error adding ice candidate:", err);
+            }
+        });
+
+    </script>
+</body>
+
+</html>
